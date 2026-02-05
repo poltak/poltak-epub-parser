@@ -1,6 +1,6 @@
 {
     "name": "poltak-epub-parser",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "description": "A lightweight browser-first EPUB parsing library.",
     "type": "module",
     "license": "Apache-2.0",
