@@ -311,6 +311,80 @@ describe('parseEpub', () => {
         })
     })
 
+    describe('EPUB3 nav enhancement', () => {
+        test('falls back to NCX when no toc nav is present', async () => {
+            const mockFile = createMockEpubFile({
+                hasNav: true,
+                hasNCX: true,
+                navHasToc: false,
+                navTitles: ['Landmarks 1', 'Landmarks 2'],
+                chapters: [
+                    { title: 'NCX Title 1', content: 'Content 1' },
+                    { title: 'NCX Title 2', content: 'Content 2' },
+                ],
+            })
+
+            const result = await parseEpub(mockFile)
+
+            // nav.xhtml uses epub:type="toc"; this test ensures we don't grab a non-toc nav.
+            expect(result.chapters[0].title).toBe('NCX Title 1')
+            expect(result.chapters[1].title).toBe('NCX Title 2')
+        })
+
+        test('uses nav document titles when available', async () => {
+            const mockFile = createMockEpubFile({
+                hasNav: true,
+                hasNCX: false,
+                navTitles: ['Nav Title 1', 'Nav Title 2'],
+                chapters: [
+                    { title: 'NCX Title 1', content: 'Content 1' },
+                    { title: 'NCX Title 2', content: 'Content 2' },
+                ],
+            })
+
+            const result = await parseEpub(mockFile)
+
+            expect(result.chapters[0].title).toBe('Nav Title 1')
+            expect(result.chapters[1].title).toBe('Nav Title 2')
+        })
+
+        test('prefers nav document over NCX when both exist', async () => {
+            const mockFile = createMockEpubFile({
+                hasNav: true,
+                hasNCX: true,
+                navTitles: ['Nav Preferred 1', 'Nav Preferred 2'],
+                chapters: [
+                    { title: 'NCX Title 1', content: 'Content 1' },
+                    { title: 'NCX Title 2', content: 'Content 2' },
+                ],
+            })
+
+            const result = await parseEpub(mockFile)
+
+            expect(result.chapters[0].title).toBe('Nav Preferred 1')
+            expect(result.chapters[1].title).toBe('Nav Preferred 2')
+        })
+
+        test('resolves nav links relative to nav document path', async () => {
+            const mockFile = createMockEpubFile({
+                hasNav: true,
+                hasNCX: false,
+                navBaseDir: 'nav',
+                navLinkPrefix: '../',
+                navTitles: ['Nav Subdir 1', 'Nav Subdir 2'],
+                chapters: [
+                    { title: 'Chapter One', content: 'Content 1' },
+                    { title: 'Chapter Two', content: 'Content 2' },
+                ],
+            })
+
+            const result = await parseEpub(mockFile)
+
+            expect(result.chapters[0].title).toBe('Nav Subdir 1')
+            expect(result.chapters[1].title).toBe('Nav Subdir 2')
+        })
+    })
+
     describe('NCX enhancement', () => {
         test('should enhance chapter titles from NCX when available', async () => {
             const mockFile = createMockEpubFile({

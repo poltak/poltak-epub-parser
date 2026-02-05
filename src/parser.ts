@@ -28,6 +28,12 @@ export interface EpubData {
     allText: string
 }
 
+type ManifestItem = {
+    href: string
+    mediaType: string
+    properties?: string
+}
+
 export async function parseEpub(file: File | Blob): Promise<EpubData> {
     const zipReader = new ZipReader(new BlobReader(file))
 
@@ -39,7 +45,11 @@ export async function parseEpub(file: File | Blob): Promise<EpubData> {
         const { manifest, spine } = parseManifestAndSpine(opfContent)
         const chapters = await readChapters(entries, opfPath, manifest, spine)
 
-        await enhanceChapterTitlesFromNCX(entries, opfPath, chapters, manifest)
+        const navEnhanced = await enhanceChapterTitlesFromNav(entries, opfPath, chapters, manifest)
+        if (!navEnhanced) {
+            await enhanceChapterTitlesFromNCX(entries, opfPath, chapters, manifest)
+        }
+
         calculateWordPositions(chapters)
 
         const tableOfContents = generateTableOfContents(chapters)
@@ -104,22 +114,23 @@ function parseMetadata(opfContent: string): { title: string; author: string } {
 }
 
 function parseManifestAndSpine(opfContent: string): {
-    manifest: Map<string, { href: string; mediaType: string }>
+    manifest: Map<string, ManifestItem>
     spine: string[]
 } {
     const parser = new DOMParser()
     const opfDoc = parser.parseFromString(opfContent, 'text/xml')
 
-    const manifest = new Map<string, { href: string; mediaType: string }>()
+    const manifest = new Map<string, ManifestItem>()
     const manifestItems = opfDoc.querySelectorAll('manifest item')
 
     manifestItems.forEach((item) => {
         const id = item.getAttribute('id')
         const href = item.getAttribute('href')
         const mediaType = item.getAttribute('media-type')
+        const properties = item.getAttribute('properties') || undefined
 
         if (id && href && mediaType) {
-            manifest.set(id, { href, mediaType })
+            manifest.set(id, { href, mediaType, properties })
         }
     })
 
@@ -139,7 +150,7 @@ function parseManifestAndSpine(opfContent: string): {
 async function readChapters(
     entries: Entry[],
     opfPath: string,
-    manifest: Map<string, { href: string; mediaType: string }>,
+    manifest: Map<string, ManifestItem>,
     spine: string[],
 ): Promise<Chapter[]> {
     const chapters: Chapter[] = []
@@ -175,11 +186,146 @@ async function readChapters(
     return chapters
 }
 
+async function enhanceChapterTitlesFromNav(
+    entries: Entry[],
+    opfPath: string,
+    chapters: Chapter[],
+    manifest: Map<string, ManifestItem>,
+): Promise<boolean> {
+    try {
+        let navHref = ''
+        for (const [, item] of manifest) {
+            if (item.properties?.split(/\s+/).includes('nav')) {
+                navHref = item.href
+                break
+            }
+        }
+
+        if (!navHref) return false
+
+        const opfBasePath = opfPath.substring(0, opfPath.lastIndexOf('/') + 1)
+        const fullPath = opfBasePath + navHref
+        const navEntry = entries.find((entry) => entry.filename === fullPath)
+
+        if (!isFileEntry(navEntry)) return false
+
+        const textWriter = new TextWriter()
+        const navContent = await navEntry.getData(textWriter)
+
+        const parser = new DOMParser()
+        let navDoc = parser.parseFromString(navContent, 'application/xhtml+xml')
+        if (navDoc.querySelector('parsererror')) {
+            navDoc = parser.parseFromString(navContent, 'text/html')
+        }
+
+        const navElements = Array.from(navDoc.querySelectorAll('nav'))
+        const navElement = navElements.find((nav) => {
+            const epubType = resolveEpubType(nav)
+            const role = nav.getAttribute('role')?.trim().toLowerCase()
+            const type = nav.getAttribute('type')?.trim().toLowerCase()
+
+            return epubType === 'toc' || role === 'doc-toc' || type === 'toc'
+        })
+
+        if (!navElement) return false
+
+        const navLinks = navElement.querySelectorAll('a[href]')
+        if (!navLinks.length) return false
+
+        const navBasePath = navHref.includes('/') ? navHref.substring(0, navHref.lastIndexOf('/') + 1) : ''
+        const navTitles = new Map<string, string>()
+
+        navLinks.forEach((link) => {
+            const href = link.getAttribute('href')?.trim()
+            const title = link.textContent?.trim()
+            if (!href || !title) return
+
+            const cleanHref = href.split('#')[0]
+            const normalized = normalizeNavHref(cleanHref, navBasePath, opfBasePath)
+            if (normalized) {
+                navTitles.set(normalized, title)
+            }
+        })
+
+        let updated = false
+        for (const [id, manifestItem] of manifest) {
+            const chapter = chapters.find((ch) => ch.id === id)
+            const normalizedManifestHref = normalizeNavHref(manifestItem.href, '', opfBasePath)
+            if (chapter && navTitles.has(normalizedManifestHref)) {
+                const navTitle = navTitles.get(normalizedManifestHref)
+                if (navTitle && navTitle.length > 0) {
+                    chapter.title = navTitle
+                    updated = true
+                }
+            }
+        }
+
+        return updated
+    } catch (error) {
+        console.warn('Failed to parse nav file:', error)
+        return false
+    }
+}
+
+function normalizeNavHref(href: string, navBasePath: string, opfBasePath: string): string {
+    if (!href) return ''
+    if (/^[a-z]+:/i.test(href)) return href
+
+    let normalized = href
+    if (!normalized.startsWith('/')) {
+        normalized = `${navBasePath}${normalized}`
+    }
+
+    normalized = normalizeRelativePath(normalized)
+    if (normalized.startsWith('/')) {
+        normalized = normalized.slice(1)
+    }
+    if (opfBasePath && normalized.startsWith(opfBasePath)) {
+        normalized = normalized.slice(opfBasePath.length)
+    }
+    return normalized
+}
+
+function normalizeRelativePath(path: string): string {
+    const parts = path.split('/')
+    const normalizedParts: string[] = []
+
+    for (const part of parts) {
+        if (!part || part === '.') continue
+        if (part === '..') {
+            normalizedParts.pop()
+            continue
+        }
+        normalizedParts.push(part)
+    }
+
+    return normalizedParts.join('/')
+}
+
+function resolveEpubType(nav: Element): string | undefined {
+    const direct = nav.getAttribute('epub:type')
+    if (direct) return direct.trim().toLowerCase()
+
+    if (nav.hasAttribute('epub:type')) {
+        const attr = nav.getAttribute('epub:type')
+        if (attr) return attr.trim().toLowerCase()
+    }
+
+    for (const attr of Array.from(nav.attributes)) {
+        const name = attr.name.toLowerCase()
+        if (name === 'epub:type' || name.endsWith(':type')) {
+            const value = attr.value.trim()
+            if (value) return value.toLowerCase()
+        }
+    }
+
+    return undefined
+}
 async function enhanceChapterTitlesFromNCX(
     entries: Entry[],
     opfPath: string,
     chapters: Chapter[],
-    manifest: Map<string, { href: string; mediaType: string }>,
+    manifest: Map<string, ManifestItem>,
 ): Promise<void> {
     try {
         let ncxHref = ''

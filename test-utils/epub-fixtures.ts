@@ -11,6 +11,16 @@ export interface MockEpubOptions {
     chapters?: MockChapter[]
     /** Denotes whether the EPUB has a Table of Contents (NCX) file. */
     hasNCX?: boolean
+    /** Denotes whether the EPUB has an EPUB3 navigation document. */
+    hasNav?: boolean
+    /** Optional override titles for nav entries. */
+    navTitles?: string[]
+    /** Optional base directory for nav document, relative to OPF. */
+    navBaseDir?: string
+    /** Optional prefix for nav links (e.g. '../'). */
+    navLinkPrefix?: string
+    /** Whether to include a toc nav section. */
+    navHasToc?: boolean
     language?: string
 }
 
@@ -107,6 +117,11 @@ export const createMockEpubFile = (options: MockEpubOptions): Blob => {
             { title: 'Chapter 2', content: 'This is the second chapter with more text content.' },
         ],
         hasNCX = true,
+        hasNav = false,
+        navTitles = [],
+        navBaseDir = '',
+        navLinkPrefix = '',
+        navHasToc = true,
     } = options
 
     const files = new Map<string, string>()
@@ -135,6 +150,10 @@ export const createMockEpubFile = (options: MockEpubOptions): Blob => {
     const ncxItem = hasNCX
         ? '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>'
         : ''
+    const normalizedNavBaseDir = navBaseDir && !navBaseDir.endsWith('/') ? `${navBaseDir}/` : navBaseDir
+    const navItem = hasNav
+        ? `<item id="nav" href="${normalizedNavBaseDir}nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>`
+        : ''
     const ncxSpine = hasNCX ? ' toc="ncx"' : ''
 
     files.set(
@@ -149,6 +168,7 @@ export const createMockEpubFile = (options: MockEpubOptions): Blob => {
     <manifest>
         ${manifestItems}
         ${ncxItem}
+        ${navItem}
     </manifest>
     <spine${ncxSpine}>
         ${spineItems}
@@ -201,6 +221,40 @@ export const createMockEpubFile = (options: MockEpubOptions): Blob => {
         ${navPoints}
     </navMap>
 </ncx>`,
+        )
+    }
+
+    if (hasNav) {
+        const navItems = chapters
+            .map((chapter, i) => {
+                const navTitle = navTitles[i] ?? chapter.title
+                return `<li><a href="${navLinkPrefix}chapter${i + 1}.xhtml">${navTitle}</a></li>`
+            })
+            .join('\n        ')
+
+        files.set(
+            `OEBPS/${normalizedNavBaseDir}nav.xhtml`,
+            `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head>
+    <title>Navigation</title>
+</head>
+<body>
+    <nav epub:type="landmarks">
+        <ol>
+            <li><a href="cover.xhtml">Cover</a></li>
+        </ol>
+    </nav>
+    ${navHasToc
+        ? `<nav epub:type="toc">
+        <ol>
+        ${navItems}
+        </ol>
+    </nav>`
+        : ''}
+</body>
+</html>`,
         )
     }
 

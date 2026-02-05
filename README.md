@@ -43,6 +43,4 @@ Parses an EPUB file and returns:
 ## Notes
 
 - This library depends on browser APIs (`DOMParser`, `File`, `Blob`) and does not support Node.
-- EPUB3 `nav` support is not implemented yet (NCX is supported).
-- For publishing, run `npm run build` to generate `dist/`. You can then point the package exports to `dist` if you want to ship compiled output.
 
