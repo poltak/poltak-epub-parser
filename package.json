@@ -1,0 +1,56 @@
+{
+  "name": "poltak-epub-parser",
+  "version": "0.1.0",
+  "description": "A lightweight browser-first EPUB parsing library.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Jonathan Poltak Samosir",
+    "email": "jonathan.samosir@gmail.com",
+    "url": "https://poltak.github.io"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:poltak/poltak-epub-parser.git"
+  },
+  "keywords": [
+    "epub",
+    "parser",
+    "ebook",
+    "zip",
+    "browser"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "build:watch": "tsup --watch",
+    "prepublishOnly": "npm run build",
+    "test": "vitest",
+    "lint": "prettier --check ."
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@zip.js/zip.js": "^2.8.16"
+  },
+  "devDependencies": {
+    "tsup": "^8.1.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18",
+    "jsdom": "^28.0.0"
+  }
+}
