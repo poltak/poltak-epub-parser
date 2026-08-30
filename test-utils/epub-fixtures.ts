@@ -150,7 +150,8 @@ export const createMockEpubFile = (options: MockEpubOptions): Blob => {
     const ncxItem = hasNCX
         ? '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>'
         : ''
-    const normalizedNavBaseDir = navBaseDir && !navBaseDir.endsWith('/') ? `${navBaseDir}/` : navBaseDir
+    const normalizedNavBaseDir =
+        navBaseDir && !navBaseDir.endsWith('/') ? `${navBaseDir}/` : navBaseDir
     const navItem = hasNav
         ? `<item id="nav" href="${normalizedNavBaseDir}nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>`
         : ''
@@ -246,13 +247,15 @@ export const createMockEpubFile = (options: MockEpubOptions): Blob => {
             <li><a href="cover.xhtml">Cover</a></li>
         </ol>
     </nav>
-    ${navHasToc
-        ? `<nav epub:type="toc">
+    ${
+        navHasToc
+            ? `<nav epub:type="toc">
         <ol>
         ${navItems}
         </ol>
     </nav>`
-        : ''}
+            : ''
+    }
 </body>
 </html>`,
         )
@@ -271,7 +274,7 @@ export function mockChaptersToExpectedData(
     let accumulatedWordCount = 0
 
     const getChapterData = (chapter: MockChapter, index: number) => {
-        let content = chapter.title ? `${chapter.title}\n    ${chapter.content}` : chapter.content
+        let content = chapter.title ? `${chapter.title}\n\n    ${chapter.content}` : chapter.content
         content = content.replace(/<script[^>]*>[\s\S]*?<\/script>/g, '').trim()
         content = content.replace(/<[^>]*>?/g, '').trim()
         const title = chapter.title || `Chapter ${index + 1}`

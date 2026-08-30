@@ -69,6 +69,10 @@ async function readBlobText(blob: Blob): Promise<string> {
     return new TextDecoder().decode(buffer)
 }
 
+function createMockArchive(files: Record<string, string>): Blob {
+    return new Blob([JSON.stringify(files)], { type: 'application/epub+zip' })
+}
+
 describe('parseEpub', () => {
     beforeEach(() => {
         vi.clearAllMocks()
@@ -220,7 +224,9 @@ describe('parseEpub', () => {
             expect(result.tableOfContents).toEqual(
                 mockChaptersToExpectedData(BOOK_MINIMAL.chapters!, 'toc'),
             )
-            expect(result.allText).toBe(mockChaptersToExpectedData(BOOK_MINIMAL.chapters!, 'all-text'))
+            expect(result.allText).toBe(
+                mockChaptersToExpectedData(BOOK_MINIMAL.chapters!, 'all-text'),
+            )
         })
 
         test('should use complex book fixture', async () => {
@@ -282,7 +288,9 @@ describe('parseEpub', () => {
             }
             const invalidFile = new Blob([JSON.stringify(files)], { type: 'application/epub+zip' })
 
-            await expect(parseEpub(invalidFile)).rejects.toThrow('Rootfile not found in container.xml')
+            await expect(parseEpub(invalidFile)).rejects.toThrow(
+                'Rootfile not found in container.xml',
+            )
         })
 
         test('should throw when OPF file is missing', async () => {
@@ -308,6 +316,24 @@ describe('parseEpub', () => {
             const zipInstance = (ZipReader as unknown as { mock: { instances: any[] } }).mock
                 .instances[0]
             expect(zipInstance?.close).toHaveBeenCalled()
+        })
+
+        test('should reject malformed container XML with a clear error', async () => {
+            const invalidFile = createMockArchive({
+                'META-INF/container.xml': '<container><rootfiles>',
+            })
+
+            await expect(parseEpub(invalidFile)).rejects.toThrow('Invalid container.xml XML')
+        })
+
+        test('should reject malformed OPF XML with a clear error', async () => {
+            const invalidFile = createMockArchive({
+                'META-INF/container.xml':
+                    '<container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>',
+                'OEBPS/content.opf': '<package><metadata></package>',
+            })
+
+            await expect(parseEpub(invalidFile)).rejects.toThrow('Invalid OPF XML')
         })
     })
 
@@ -385,6 +411,52 @@ describe('parseEpub', () => {
         })
     })
 
+    describe('normalized navigation paths', () => {
+        test('should resolve encoded nav paths and nav targets with query fragments', async () => {
+            const mockFile = createMockArchive({
+                'META-INF/container.xml':
+                    '<container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>',
+                'OEBPS/content.opf': `
+                    <package><metadata><title>Nav Path Test</title><creator>Test Author</creator></metadata>
+                    <manifest>
+                        <item id="chapter" href="Text/chapter.xhtml" media-type="application/xhtml+xml"/>
+                        <item id="nav" href="nav%20files/nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+                    </manifest>
+                    <spine><itemref idref="chapter"/></spine></package>`,
+                'OEBPS/Text/chapter.xhtml':
+                    '<html><head><title>Document Title</title></head><body><p>Chapter text.</p></body></html>',
+                'OEBPS/nav files/nav.xhtml':
+                    '<html><body><nav epub:type="toc" xmlns:epub="http://www.idpf.org/2007/ops"><ol><li><a href="../Text/chapter.xhtml?view=reader#start">Navigation Title</a></li></ol></nav></body></html>',
+            })
+
+            const result = await parseEpub(mockFile)
+
+            expect(result.chapters[0].title).toBe('Navigation Title')
+        })
+
+        test('should normalize NCX paths and targets before matching chapters', async () => {
+            const mockFile = createMockArchive({
+                'META-INF/container.xml':
+                    '<container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>',
+                'OEBPS/content.opf': `
+                    <package><metadata><title>NCX Path Test</title><creator>Test Author</creator></metadata>
+                    <manifest>
+                        <item id="chapter" href="Text/chapter.xhtml" media-type="application/xhtml+xml"/>
+                        <item id="ncx" href="toc%20files/toc.ncx" media-type="application/x-dtbncx+xml"/>
+                    </manifest>
+                    <spine><itemref idref="chapter"/></spine></package>`,
+                'OEBPS/Text/chapter.xhtml':
+                    '<html><head><title>Document Title</title></head><body><p>Chapter text.</p></body></html>',
+                'OEBPS/toc files/toc.ncx':
+                    '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><navMap><navPoint><navLabel><text>NCX Title</text></navLabel><content src="../Text/chapter.xhtml?view=reader#start"/></navPoint></navMap></ncx>',
+            })
+
+            const result = await parseEpub(mockFile)
+
+            expect(result.chapters[0].title).toBe('NCX Title')
+        })
+    })
+
     describe('NCX enhancement', () => {
         test('should enhance chapter titles from NCX when available', async () => {
             const mockFile = createMockEpubFile({
@@ -441,6 +513,80 @@ describe('parseEpub', () => {
             const result = await parseEpub(mockFile)
 
             expect(result.chapters[0].title).toBe('Extracted Title')
+        })
+
+        test('should preserve boundaries between adjacent blocks and br elements', async () => {
+            const mockFile = createMockArchive({
+                'META-INF/container.xml':
+                    '<container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>',
+                'OEBPS/content.opf': `
+                    <package>
+                        <metadata><title>Boundary Test</title><creator>Test Author</creator></metadata>
+                        <manifest><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest>
+                        <spine><itemref idref="chapter"/></spine>
+                    </package>`,
+                'OEBPS/chapter.xhtml':
+                    '<html><head><title>Boundary Test</title></head><body><p>Hello</p><p>world</p><div>third</div><br/>fourth</body></html>',
+            })
+
+            const result = await parseEpub(mockFile)
+
+            expect(result.chapters[0].content).toBe('Hello\n\nworld\n\nthird\n\nfourth')
+            expect(result.chapters[0].wordCount).toBe(4)
+            expect(result.allText).toBe('Hello world third fourth')
+        })
+    })
+
+    describe('path, metadata, and spine handling', () => {
+        test('should resolve encoded OPF-relative paths and normalized metadata', async () => {
+            const mockFile = createMockArchive({
+                'META-INF/container.xml':
+                    '<container><rootfiles><rootfile full-path="./OEBPS/content.opf"/></rootfiles></container>',
+                'OEBPS/content.opf': `
+                    <opf:package xmlns:opf="http://www.idpf.org/2007/opf" version="3.0">
+                        <opf:metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+                            <dc:title>  Namespaced Title  </dc:title>
+                            <dc:creator>  Namespaced Author  </dc:creator>
+                        </opf:metadata>
+                        <opf:manifest>
+                            <opf:item id="chapter" href="../Text/chapter%201.xhtml?view=reader#start" media-type="APPLICATION/XHTML+XML"/>
+                            <opf:item id="supplement" href="supplement.xhtml" media-type="text/html"/>
+                        </opf:manifest>
+                        <opf:spine>
+                            <opf:itemref idref="chapter"/>
+                            <opf:itemref idref="supplement" linear="no"/>
+                        </opf:spine>
+                    </opf:package>`,
+                'Text/chapter 1.xhtml':
+                    '<html><head><title>Main Chapter</title></head><body><h1>Main Chapter</h1><p>Readable text.</p></body></html>',
+                'OEBPS/supplement.xhtml':
+                    '<html><body><h1>Supplement</h1><p>Auxiliary text.</p></body></html>',
+            })
+
+            const result = await parseEpub(mockFile)
+
+            expect(result.title).toBe('Namespaced Title')
+            expect(result.author).toBe('Namespaced Author')
+            expect(result.chapters).toHaveLength(1)
+            expect(result.chapters[0].content).toContain('Readable text.')
+        })
+
+        test('should safely fall back for malformed percent escapes', async () => {
+            const mockFile = createMockArchive({
+                'META-INF/container.xml':
+                    '<container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>',
+                'OEBPS/content.opf': `
+                    <package><metadata><title>Malformed Escape</title><creator>Test Author</creator></metadata>
+                    <manifest><item id="chapter" href="chapter%ZZ.xhtml" media-type="text/html"/></manifest>
+                    <spine><itemref idref="chapter"/></spine></package>`,
+                'OEBPS/chapter%ZZ.xhtml':
+                    '<html><head><title>Chapter</title></head><body><p>Still readable.</p></body></html>',
+            })
+
+            const result = await parseEpub(mockFile)
+
+            expect(result.chapters).toHaveLength(1)
+            expect(result.chapters[0].content).toContain('Still readable.')
         })
     })
 

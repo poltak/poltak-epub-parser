@@ -34,6 +34,44 @@ type ManifestItem = {
     properties?: string
 }
 
+const DC_NAMESPACE = 'http://purl.org/dc/elements/1.1/'
+const EPUB_NAMESPACE = 'http://www.idpf.org/2007/ops'
+const HTML_MEDIA_TYPES = new Set(['application/xhtml+xml', 'text/html'])
+const BLOCK_ELEMENTS = new Set([
+    'ADDRESS',
+    'ARTICLE',
+    'ASIDE',
+    'BLOCKQUOTE',
+    'DD',
+    'DIV',
+    'DL',
+    'DT',
+    'FIGCAPTION',
+    'FIGURE',
+    'FOOTER',
+    'FORM',
+    'H1',
+    'H2',
+    'H3',
+    'H4',
+    'H5',
+    'H6',
+    'HEADER',
+    'HR',
+    'LI',
+    'MAIN',
+    'NAV',
+    'OL',
+    'P',
+    'PRE',
+    'SECTION',
+    'TABLE',
+    'TD',
+    'TH',
+    'TR',
+    'UL',
+])
+
 export async function parseEpub(file: File | Blob): Promise<EpubData> {
     const zipReader = new ZipReader(new BlobReader(file))
 
@@ -77,13 +115,12 @@ async function readContainer(entries: Entry[]): Promise<{ opfPath: string; conta
     const textWriter = new TextWriter()
     const containerXml = await containerEntry.getData(textWriter)
 
-    const parser = new DOMParser()
-    const containerDoc = parser.parseFromString(containerXml, 'text/xml')
-    const rootfileElement = containerDoc.querySelector('rootfile')
+    const containerDoc = parseXmlDocument(containerXml, 'container.xml')
+    const rootfileElement = findFirstElementByLocalName(containerDoc, 'rootfile')
 
     if (!rootfileElement) throw new Error('Rootfile not found in container.xml')
 
-    const opfPath = rootfileElement.getAttribute('full-path') || ''
+    const opfPath = resolveEpubPath('', rootfileElement.getAttribute('full-path') || '')
     if (!opfPath) throw new Error('OPF path not found')
 
     return { opfPath, containerXml }
@@ -101,15 +138,16 @@ async function readOpf(entries: Entry[], opfPath: string): Promise<string> {
 }
 
 function parseMetadata(opfContent: string): { title: string; author: string } {
-    const parser = new DOMParser()
-    const opfDoc = parser.parseFromString(opfContent, 'text/xml')
-
-    const titleElement = opfDoc.querySelector('metadata title, metadata dc\\:title')
-    const authorElement = opfDoc.querySelector('metadata creator, metadata dc\\:creator')
+    const opfDoc = parseXmlDocument(opfContent, 'OPF')
+    const metadataElement = findFirstElementByLocalName(opfDoc, 'metadata')
+    const titleElement = findMetadataElement(metadataElement, 'title')
+    const authorElement = findMetadataElement(metadataElement, 'creator')
+    const title = titleElement?.textContent?.trim() || ''
+    const author = authorElement?.textContent?.trim() || ''
 
     return {
-        title: titleElement?.textContent || 'Unknown Title',
-        author: authorElement?.textContent || 'Unknown Author',
+        title: title || 'Unknown Title',
+        author: author || 'Unknown Author',
     }
 }
 
@@ -117,17 +155,17 @@ function parseManifestAndSpine(opfContent: string): {
     manifest: Map<string, ManifestItem>
     spine: string[]
 } {
-    const parser = new DOMParser()
-    const opfDoc = parser.parseFromString(opfContent, 'text/xml')
+    const opfDoc = parseXmlDocument(opfContent, 'OPF')
 
     const manifest = new Map<string, ManifestItem>()
-    const manifestItems = opfDoc.querySelectorAll('manifest item')
+    const manifestElement = findFirstElementByLocalName(opfDoc, 'manifest')
+    const manifestItems = manifestElement ? getElementsByLocalName(manifestElement, 'item') : []
 
     manifestItems.forEach((item) => {
-        const id = item.getAttribute('id')
-        const href = item.getAttribute('href')
-        const mediaType = item.getAttribute('media-type')
-        const properties = item.getAttribute('properties') || undefined
+        const id = item.getAttribute('id')?.trim()
+        const href = item.getAttribute('href')?.trim()
+        const mediaType = item.getAttribute('media-type')?.trim().toLowerCase()
+        const properties = item.getAttribute('properties')?.trim().toLowerCase() || undefined
 
         if (id && href && mediaType) {
             manifest.set(id, { href, mediaType, properties })
@@ -135,11 +173,13 @@ function parseManifestAndSpine(opfContent: string): {
     })
 
     const spine: string[] = []
-    const spineItems = opfDoc.querySelectorAll('spine itemref')
+    const spineElement = findFirstElementByLocalName(opfDoc, 'spine')
+    const spineItems = spineElement ? getElementsByLocalName(spineElement, 'itemref') : []
 
     spineItems.forEach((item) => {
-        const idref = item.getAttribute('idref')
-        if (idref) {
+        const idref = item.getAttribute('idref')?.trim()
+        const linear = item.getAttribute('linear')?.trim().toLowerCase()
+        if (idref && linear !== 'no') {
             spine.push(idref)
         }
     })
@@ -154,15 +194,15 @@ async function readChapters(
     spine: string[],
 ): Promise<Chapter[]> {
     const chapters: Chapter[] = []
-    const basePath = opfPath.substring(0, opfPath.lastIndexOf('/') + 1)
+    const basePath = getDirectoryPath(opfPath)
 
     for (let i = 0; i < spine.length; i++) {
         const itemId = spine[i]
         const manifestItem = manifest.get(itemId)
 
-        if (!manifestItem || !manifestItem.mediaType.includes('html')) continue
+        if (!manifestItem || !HTML_MEDIA_TYPES.has(manifestItem.mediaType)) continue
 
-        const fullPath = basePath + manifestItem.href
+        const fullPath = resolveEpubPath(basePath, manifestItem.href)
         const chapterEntry = entries.find((entry) => entry.filename === fullPath)
 
         if (!isFileEntry(chapterEntry)) continue
@@ -203,9 +243,9 @@ async function enhanceChapterTitlesFromNav(
 
         if (!navHref) return false
 
-        const opfBasePath = opfPath.substring(0, opfPath.lastIndexOf('/') + 1)
-        const fullPath = opfBasePath + navHref
-        const navEntry = entries.find((entry) => entry.filename === fullPath)
+        const opfBasePath = getDirectoryPath(opfPath)
+        const navPath = resolveEpubPath(opfBasePath, navHref)
+        const navEntry = entries.find((entry) => entry.filename === navPath)
 
         if (!isFileEntry(navEntry)) return false
 
@@ -214,17 +254,17 @@ async function enhanceChapterTitlesFromNav(
 
         const parser = new DOMParser()
         let navDoc = parser.parseFromString(navContent, 'application/xhtml+xml')
-        if (navDoc.querySelector('parsererror')) {
+        if (isXmlParserError(navDoc)) {
             navDoc = parser.parseFromString(navContent, 'text/html')
         }
 
-        const navElements = Array.from(navDoc.querySelectorAll('nav'))
+        const navElements = getElementsByLocalName(navDoc, 'nav')
         const navElement = navElements.find((nav) => {
             const epubType = resolveEpubType(nav)
             const role = nav.getAttribute('role')?.trim().toLowerCase()
             const type = nav.getAttribute('type')?.trim().toLowerCase()
 
-            return epubType === 'toc' || role === 'doc-toc' || type === 'toc'
+            return epubType?.split(/\s+/).includes('toc') || role === 'doc-toc' || type === 'toc'
         })
 
         if (!navElement) return false
@@ -232,7 +272,7 @@ async function enhanceChapterTitlesFromNav(
         const navLinks = navElement.querySelectorAll('a[href]')
         if (!navLinks.length) return false
 
-        const navBasePath = navHref.includes('/') ? navHref.substring(0, navHref.lastIndexOf('/') + 1) : ''
+        const navBasePath = getDirectoryPath(navPath)
         const navTitles = new Map<string, string>()
 
         navLinks.forEach((link) => {
@@ -240,8 +280,7 @@ async function enhanceChapterTitlesFromNav(
             const title = link.textContent?.trim()
             if (!href || !title) return
 
-            const cleanHref = href.split('#')[0]
-            const normalized = normalizeNavHref(cleanHref, navBasePath, opfBasePath)
+            const normalized = resolveEpubPath(navBasePath, href)
             if (normalized) {
                 navTitles.set(normalized, title)
             }
@@ -250,7 +289,7 @@ async function enhanceChapterTitlesFromNav(
         let updated = false
         for (const [id, manifestItem] of manifest) {
             const chapter = chapters.find((ch) => ch.id === id)
-            const normalizedManifestHref = normalizeNavHref(manifestItem.href, '', opfBasePath)
+            const normalizedManifestHref = resolveEpubPath(opfBasePath, manifestItem.href)
             if (chapter && navTitles.has(normalizedManifestHref)) {
                 const navTitle = navTitles.get(normalizedManifestHref)
                 if (navTitle && navTitle.length > 0) {
@@ -267,32 +306,23 @@ async function enhanceChapterTitlesFromNav(
     }
 }
 
-function normalizeNavHref(href: string, navBasePath: string, opfBasePath: string): string {
-    if (!href) return ''
-    if (/^[a-z]+:/i.test(href)) return href
+function resolveEpubPath(basePath: string, href: string): string {
+    const pathPart = href.trim().split(/[?#]/, 1)[0]
+    if (!pathPart || /^[a-z][a-z\d+.-]*:/i.test(pathPart)) return ''
 
-    let normalized = href
-    if (!normalized.startsWith('/')) {
-        normalized = `${navBasePath}${normalized}`
-    }
+    const decodedPath = safelyDecodeUriComponent(pathPart)
+    if (decodedPath.includes('\0')) return ''
 
-    normalized = normalizeRelativePath(normalized)
-    if (normalized.startsWith('/')) {
-        normalized = normalized.slice(1)
-    }
-    if (opfBasePath && normalized.startsWith(opfBasePath)) {
-        normalized = normalized.slice(opfBasePath.length)
-    }
-    return normalized
-}
-
-function normalizeRelativePath(path: string): string {
-    const parts = path.split('/')
+    const combinedPath = decodedPath.startsWith('/')
+        ? decodedPath.slice(1)
+        : `${basePath}${decodedPath}`
+    const parts = combinedPath.split('/')
     const normalizedParts: string[] = []
 
     for (const part of parts) {
         if (!part || part === '.') continue
         if (part === '..') {
+            if (!normalizedParts.length) return ''
             normalizedParts.pop()
             continue
         }
@@ -302,18 +332,27 @@ function normalizeRelativePath(path: string): string {
     return normalizedParts.join('/')
 }
 
-function resolveEpubType(nav: Element): string | undefined {
-    const direct = nav.getAttribute('epub:type')
-    if (direct) return direct.trim().toLowerCase()
-
-    if (nav.hasAttribute('epub:type')) {
-        const attr = nav.getAttribute('epub:type')
-        if (attr) return attr.trim().toLowerCase()
+function safelyDecodeUriComponent(value: string): string {
+    try {
+        return decodeURIComponent(value)
+    } catch {
+        return value
     }
+}
 
+function getDirectoryPath(path: string): string {
+    const slashIndex = path.lastIndexOf('/')
+    return slashIndex < 0 ? '' : path.slice(0, slashIndex + 1)
+}
+
+function resolveEpubType(nav: Element): string | undefined {
     for (const attr of Array.from(nav.attributes)) {
         const name = attr.name.toLowerCase()
-        if (name === 'epub:type' || name.endsWith(':type')) {
+        if (
+            name === 'epub:type' ||
+            name.endsWith(':type') ||
+            (attr.namespaceURI === EPUB_NAMESPACE && attr.localName?.toLowerCase() === 'type')
+        ) {
             const value = attr.value.trim()
             if (value) return value.toLowerCase()
         }
@@ -338,39 +377,40 @@ async function enhanceChapterTitlesFromNCX(
 
         if (!ncxHref) return
 
-        const basePath = opfPath.substring(0, opfPath.lastIndexOf('/') + 1)
-        const fullPath = basePath + ncxHref
-        const ncxEntry = entries.find((entry) => entry.filename === fullPath)
+        const opfBasePath = getDirectoryPath(opfPath)
+        const ncxPath = resolveEpubPath(opfBasePath, ncxHref)
+        const ncxEntry = entries.find((entry) => entry.filename === ncxPath)
 
         if (!isFileEntry(ncxEntry)) return
 
         const textWriter = new TextWriter()
         const ncxContent = await ncxEntry.getData(textWriter)
 
-        const parser = new DOMParser()
-        const ncxDoc = parser.parseFromString(ncxContent, 'text/xml')
-        const navPoints = ncxDoc.querySelectorAll('navPoint')
+        const ncxDoc = parseXmlDocument(ncxContent, 'NCX')
+        const navPoints = getElementsByLocalName(ncxDoc, 'navPoint')
+        const ncxBasePath = getDirectoryPath(ncxPath)
 
         const ncxTitles = new Map<string, string>()
         navPoints.forEach((navPoint) => {
-            const textElement = navPoint.querySelector('text')
-            const contentElement = navPoint.querySelector('content')
+            const textElement = findFirstElementByLocalName(navPoint, 'text')
+            const contentElement = findFirstElementByLocalName(navPoint, 'content')
 
             if (textElement && contentElement) {
                 const title = textElement.textContent?.trim()
-                const src = contentElement.getAttribute('src')
+                const src = contentElement.getAttribute('src')?.trim()
 
                 if (title && src) {
-                    const cleanSrc = src.split('#')[0]
-                    ncxTitles.set(cleanSrc, title)
+                    const normalizedSrc = resolveEpubPath(ncxBasePath, src)
+                    if (normalizedSrc) ncxTitles.set(normalizedSrc, title)
                 }
             }
         })
 
         for (const [id, manifestItem] of manifest) {
             const chapter = chapters.find((ch) => ch.id === id)
-            if (chapter && ncxTitles.has(manifestItem.href)) {
-                const ncxTitle = ncxTitles.get(manifestItem.href)
+            const normalizedManifestHref = resolveEpubPath(opfBasePath, manifestItem.href)
+            if (chapter && ncxTitles.has(normalizedManifestHref)) {
+                const ncxTitle = ncxTitles.get(normalizedManifestHref)
                 if (ncxTitle && ncxTitle.length > 0) {
                     chapter.title = ncxTitle
                 }
@@ -379,6 +419,52 @@ async function enhanceChapterTitlesFromNCX(
     } catch (error) {
         console.warn('Failed to parse NCX file:', error)
     }
+}
+
+function parseXmlDocument(xml: string, description: string): XMLDocument {
+    const parser = new DOMParser()
+    const document = parser.parseFromString(xml, 'text/xml')
+
+    if (isXmlParserError(document)) {
+        throw new Error(`Invalid ${description} XML`)
+    }
+
+    return document
+}
+
+function isXmlParserError(document: XMLDocument): boolean {
+    return (
+        document.documentElement?.localName?.toLowerCase() === 'parsererror' ||
+        document.getElementsByTagName('parsererror').length > 0
+    )
+}
+
+function getElementsByLocalName(parent: Document | Element, localName: string): Element[] {
+    const expectedName = localName.toLowerCase()
+    return Array.from(parent.getElementsByTagName('*')).filter(
+        (element) => getElementLocalName(element) === expectedName,
+    )
+}
+
+function findFirstElementByLocalName(
+    parent: Document | Element,
+    localName: string,
+): Element | undefined {
+    return getElementsByLocalName(parent, localName)[0]
+}
+
+function getElementLocalName(element: Element): string {
+    return (element.localName || element.tagName.split(':').pop() || '').toLowerCase()
+}
+
+function findMetadataElement(
+    metadata: Element | undefined,
+    localName: string,
+): Element | undefined {
+    if (!metadata) return undefined
+
+    const namespacedElement = metadata.getElementsByTagNameNS(DC_NAMESPACE, localName)[0]
+    return namespacedElement || findFirstElementByLocalName(metadata, localName)
 }
 
 function calculateWordPositions(chapters: Chapter[]): void {
@@ -438,13 +524,42 @@ function extractTextFromHtml(html: string): { title: string; content: string } {
         .replace(/^Section\s+\d+\s*/i, '')
         .trim()
 
-    const scripts = doc.querySelectorAll('script, style')
-    scripts.forEach((script) => script.remove())
-
     const bodyElement = doc.querySelector('body') || doc.documentElement
-    const content = bodyElement.textContent?.trim() || ''
+    const content = extractReadableText(bodyElement).trim()
 
     return { title, content }
+}
+
+function extractReadableText(element: Element): string {
+    const tagName = element.tagName.toUpperCase()
+    if (tagName === 'SCRIPT' || tagName === 'STYLE' || tagName === 'NOSCRIPT') return ''
+
+    let text = ''
+    for (const child of Array.from(element.childNodes)) {
+        if (child.nodeType === 3) {
+            text = appendText(text, child.nodeValue || '')
+        } else if (child.nodeType === 1) {
+            text = appendText(text, extractReadableText(child as Element))
+        }
+    }
+
+    if (tagName === 'BR') {
+        return appendText(text, '\n')
+    }
+
+    if (BLOCK_ELEMENTS.has(tagName) && text) {
+        text = text.replace(/[ \t]+$/g, '')
+        if (!text.endsWith('\n\n')) text += text.endsWith('\n') ? '\n' : '\n\n'
+    }
+
+    return text
+}
+
+function appendText(current: string, next: string): string {
+    if (current.endsWith('\n\n') && next.startsWith('\n')) {
+        return current + next.replace(/^\n+/, '')
+    }
+    return current + next
 }
 
 function generateTableOfContents(chapters: Chapter[]): TableOfContents[] {
