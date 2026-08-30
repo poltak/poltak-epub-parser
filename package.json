@@ -1,6 +1,6 @@
 {
     "name": "poltak-epub-parser",
-    "version": "0.1.2",
+    "version": "0.1.3",
     "description": "A lightweight browser-first EPUB parsing library.",
     "type": "module",
     "license": "Apache-2.0",
@@ -48,9 +48,10 @@
         "@zip.js/zip.js": "^2.8.16"
     },
     "devDependencies": {
+        "jsdom": "^28.0.0",
+        "prettier": "^3.9.6",
         "tsup": "^8.1.0",
         "typescript": "^5.9.3",
-        "vitest": "^4.0.18",
-        "jsdom": "^28.0.0"
+        "vitest": "^4.0.18"
     }
 }

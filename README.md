@@ -43,4 +43,3 @@ Parses an EPUB file and returns:
 ## Notes
 
 - This library depends on browser APIs (`DOMParser`, `File`, `Blob`) and does not support Node.
-
